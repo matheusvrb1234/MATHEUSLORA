@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from typing import List
 
 import fire
@@ -123,6 +124,7 @@ def train(
     )
     tokenizer.padding_side = "left"  # Allow batched inference
 
+    token_count = 0
     def tokenize(prompt, add_eos_token=True):
         # there's probably a way to do this with the tokenizer settings
         # but again, gotta move fast
@@ -142,6 +144,8 @@ def train(
             result["attention_mask"].append(1)
 
         result["labels"] = result["input_ids"].copy()
+        nonlocal token_count
+        token_count += len(result["input_ids"])
 
         return result
 
@@ -224,6 +228,8 @@ def train(
         train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
         val_data = None
 
+    sample_count = train_data.num_rows
+    print(f"Training on {sample_count} samples, on {token_count} tokens")
     if not ddp and torch.cuda.device_count() > 1:
         # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
         model.is_parallelizable = True
@@ -269,8 +275,13 @@ def train(
 
     if torch.__version__ >= "2" and sys.platform != "win32":
         model = torch.compile(model)
-
+    
+    start = time.time()
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    during = time.time() - start
+    throughput_sample = sample_count / during
+    throughput_token = token_count / during
+    print(f"Training throughput_samples: {throughput_sample:.2f} samples/s, token: {throughput_token:.2f} tokens/s")
 
     model.save_pretrained(output_dir)
 
